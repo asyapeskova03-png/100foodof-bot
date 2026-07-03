@@ -5,7 +5,6 @@ import re
 from pathlib import Path
 from typing import Optional
 
-import anthropic
 import requests
 from flask import Flask, request
 
@@ -77,25 +76,24 @@ def get_definition(term: str) -> Optional[str]:
     return None
 
 
-def ask_claude(question: str) -> str:
-    client = anthropic.Anthropic(api_key=os.getenv("ANTHROPIC_API_KEY"))
-    message = client.messages.create(
-        model="claude-haiku-4-5-20251001",
-        max_tokens=1024,
-        messages=[
-            {
-                "role": "user",
-                "content": (
-                    f"Ты помощник по регламентам компании 100FOODOF. "
-                    f"Отвечай только на основе регламентов ниже. "
-                    f"Если ответа нет — скажи что не знаешь.\n\n"
-                    f"РЕГЛАМЕНТЫ:\n{REGULATIONS_CONTEXT}\n\n"
-                    f"ВОПРОС: {question}"
-                )
-            }
-        ]
+def ask_gemini(question: str) -> str:
+    api_key = os.getenv("GEMINI_API_KEY")
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key={api_key}"
+    prompt = (
+        f"Ты помощник по регламентам компании 100FOODOF. "
+        f"Отвечай только на основе регламентов ниже. "
+        f"Если ответа нет — скажи что не знаешь.\n\n"
+        f"РЕГЛАМЕНТЫ:\n{REGULATIONS_CONTEXT}\n\n"
+        f"ВОПРОС: {question}"
     )
-    return message.content[0].text
+    response = requests.post(
+        url,
+        json={"contents": [{"parts": [{"text": prompt}]}]},
+        timeout=30,
+    )
+    response.raise_for_status()
+    data = response.json()
+    return data["candidates"][0]["content"]["parts"][0]["text"]
 
 
 def send_message(chat_id: int, text: str, reply_markup="default") -> None:
@@ -225,10 +223,10 @@ def handle_text(chat_id: int, raw_text: str, from_user_label: str) -> None:
             return
         send_message(chat_id, "⏳ Думаю...")
         try:
-            answer = ask_claude(question)
+            answer = ask_gemini(question)
             send_message(chat_id, f"🤖 {answer}")
         except Exception:
-            logging.exception("Ошибка Claude API")
+            logging.exception("Ошибка Gemini API")
             send_message(chat_id, "Не удалось получить ответ. Попробуйте позже.")
         return
 
@@ -332,4 +330,3 @@ def webhook():
 @app.route("/")
 def index():
     return "100FoodOfBot работает.", 200
-
