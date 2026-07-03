@@ -33,11 +33,6 @@ MAIN_KEYBOARD = {
     "resize_keyboard": True,
 }
 
-REGULATIONS_CONTEXT = """
-Здесь будет текст регламентов компании 100FOODOF.
-Пример: кассир должен приветствовать покупателя, предлагать карту лояльности, прощаться.
-"""
-
 
 def load_json(path: Path) -> dict:
     if not path.exists():
@@ -74,33 +69,6 @@ def get_definition(term: str) -> Optional[str]:
     if normalized in CUSTOM_GLOSSARY:
         return CUSTOM_GLOSSARY[normalized]
     return None
-
-
-def ask_groq(question: str) -> str:
-    api_key = os.getenv("GROQ_API_KEY")
-    prompt = (
-        f"Ты помощник по регламентам компании 100FOODOF. "
-        f"Отвечай только на основе регламентов ниже. "
-        f"Если ответа нет — скажи что не знаешь.\n\n"
-        f"РЕГЛАМЕНТЫ:\n{REGULATIONS_CONTEXT}\n\n"
-        f"ВОПРОС: {question}"
-    )
-    response = requests.post(
-        "https://api.groq.com/openai/v1/chat/completions",
-        headers={
-            "Authorization": f"Bearer {api_key}",
-            "Content-Type": "application/json",
-        },
-        json={
-            "model": "llama-3.1-8b-instant",
-            "messages": [{"role": "user", "content": prompt}],
-            "max_tokens": 1024,
-        },
-        timeout=30,
-    )
-    response.raise_for_status()
-    data = response.json()
-    return data["choices"][0]["message"]["content"]
 
 
 def send_message(chat_id: int, text: str, reply_markup="default") -> None:
@@ -223,20 +191,6 @@ def handle_text(chat_id: int, raw_text: str, from_user_label: str) -> None:
             forward_feedback(chat_id, from_user_label, missing_term or None, term)
             return
 
-    if term.startswith("/ask"):
-        question = term[len("/ask"):].strip()
-        if not question:
-            send_message(chat_id, "Напишите вопрос после команды:\n/ask как оформить возврат?")
-            return
-        send_message(chat_id, "⏳ Думаю...")
-        try:
-            answer = ask_groq(question)
-            send_message(chat_id, f"🤖 {answer}")
-        except Exception:
-            logging.exception("Ошибка Groq API")
-            send_message(chat_id, "Не удалось получить ответ. Попробуйте позже.")
-        return
-
     if term.startswith("/start"):
         set_anon_mode(chat_id, False)
         send_message(
@@ -246,8 +200,6 @@ def handle_text(chat_id: int, raw_text: str, from_user_label: str) -> None:
             "/add термин = определение\n\n"
             "Чтобы написать в техподдержку:\n"
             "/feedback ваш текст\n\n"
-            "Задать вопрос по регламентам:\n"
-            "/ask ваш вопрос\n\n"
             "Кнопка «🤫 Анонимный чат» ниже — чтобы написать анонимно.\n\n"
             "Примеры:\n"
             "ртз\n"
