@@ -5,6 +5,7 @@ import re
 from pathlib import Path
 from typing import Optional
 
+import anthropic
 import requests
 from flask import Flask, request
 
@@ -15,9 +16,6 @@ logging.basicConfig(
     level=logging.INFO,
 )
 
-# Токен бота и chat_id техподдержки (аккаунт компании) задаются в WSGI-файле строками:
-# os.environ['TELEGRAM_BOT_TOKEN'] = '...'
-# os.environ['ADMIN_CHAT_ID'] = '...'
 BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 ADMIN_CHAT_ID = os.getenv("ADMIN_CHAT_ID")
 TELEGRAM_API = f"https://api.telegram.org/bot{BOT_TOKEN}"
@@ -35,6 +33,11 @@ MAIN_KEYBOARD = {
     "keyboard": [[{"text": MENU_DICTIONARY}, {"text": MENU_ANONYMOUS}]],
     "resize_keyboard": True,
 }
+
+REGULATIONS_CONTEXT = """
+Здесь будет текст регламентов компании 100FOODOF.
+Пример: кассир должен приветствовать покупателя, предлагать карту лояльности, прощаться.
+"""
 
 
 def load_json(path: Path) -> dict:
@@ -65,33 +68,44 @@ def set_anon_mode(chat_id: int, value: bool) -> None:
 
 
 def get_definition(term: str) -> Optional[str]:
-    """Ищет термин только в собственном словаре компании — без интернета."""
     normalized = re.sub(r"\s+", " ", term.strip()).lower()
-
     user_glossary = load_json(USER_GLOSSARY_PATH)
     if normalized in user_glossary:
         return user_glossary[normalized]
-
     if normalized in CUSTOM_GLOSSARY:
         return CUSTOM_GLOSSARY[normalized]
-
     return None
 
 
+def ask_claude(question: str) -> str:
+    client = anthropic.Anthropic(api_key=os.getenv("ANTHROPIC_API_KEY"))
+    message = client.messages.create(
+        model="claude-haiku-4-5-20251001",
+        max_tokens=1024,
+        messages=[
+            {
+                "role": "user",
+                "content": (
+                    f"Ты помощник по регламентам компании 100FOODOF. "
+                    f"Отвечай только на основе регламентов ниже. "
+                    f"Если ответа нет — скажи что не знаешь.\n\n"
+                    f"РЕГЛАМЕНТЫ:\n{REGULATIONS_CONTEXT}\n\n"
+                    f"ВОПРОС: {question}"
+                )
+            }
+        ]
+    )
+    return message.content[0].text
+
+
 def send_message(chat_id: int, text: str, reply_markup="default") -> None:
-    """reply_markup="default" — прикрепить постоянное меню (Словарь/Анонимный чат).
-    reply_markup=None — не прикреплять меню (для сообщений в техподдержку)."""
     payload = {"chat_id": chat_id, "text": text[:4000]}
     if reply_markup == "default":
         payload["reply_markup"] = MAIN_KEYBOARD
     elif reply_markup is not None:
         payload["reply_markup"] = reply_markup
     try:
-        requests.post(
-            f"{TELEGRAM_API}/sendMessage",
-            json=payload,
-            timeout=15,
-        )
+        requests.post(f"{TELEGRAM_API}/sendMessage", json=payload, timeout=15)
     except requests.RequestException:
         logging.exception("Не удалось отправить сообщение в Telegram")
 
@@ -151,45 +165,31 @@ def forward_anonymous(chat_id: int, message_text: str) -> None:
 
 def handle_add(chat_id: int, raw_text: str) -> None:
     payload = raw_text[len("/add"):].strip()
-
     if "=" not in payload:
-        send_message(
-            chat_id,
-            "Чтобы добавить слово, напишите так:\n/add термин = определение",
-        )
+        send_message(chat_id, "Чтобы добавить слово, напишите так:\n/add термин = определение")
         return
-
     term_part, definition_part = payload.split("=", 1)
     term = re.sub(r"\s+", " ", term_part.strip()).lower()
     definition = definition_part.strip()
-
     if not term or not definition:
-        send_message(
-            chat_id,
-            "Не хватает термина или определения. Формат:\n/add термин = определение",
-        )
+        send_message(chat_id, "Не хватает термина или определения. Формат:\n/add термин = определение")
         return
-
     if len(term) > 100 or len(definition) > 1000:
         send_message(chat_id, "Термин или определение слишком длинные.")
         return
-
     user_glossary = load_json(USER_GLOSSARY_PATH)
     is_update = term in user_glossary or term in CUSTOM_GLOSSARY
     user_glossary[term] = definition
     save_json(USER_GLOSSARY_PATH, user_glossary)
-
     action = "Обновлено" if is_update else "Добавлено"
     send_message(chat_id, f"✅ {action}: «{term}» — {definition}")
 
 
 def handle_feedback_command(chat_id: int, from_user_label: str, raw_text: str) -> None:
     payload = raw_text[len("/feedback"):].strip()
-
     if not payload:
         send_message(chat_id, "Напишите так:\n/feedback ваше сообщение")
         return
-
     forward_feedback(chat_id, from_user_label, None, payload)
 
 
@@ -201,22 +201,14 @@ def handle_text(chat_id: int, raw_text: str, from_user_label: str) -> None:
 
     if term == MENU_DICTIONARY:
         set_anon_mode(chat_id, False)
-        send_message(
-            chat_id,
-            "📖 Режим словаря включён.\n\nОтправьте слово, сокращение или короткий термин — отвечу по словарю компании.",
-        )
+        send_message(chat_id, "📖 Режим словаря включён.\n\nОтправьте слово, сокращение или короткий термин — отвечу по словарю компании.")
         return
 
     if term == MENU_ANONYMOUS:
         set_anon_mode(chat_id, True)
-        send_message(
-            chat_id,
-            "🤫 Анонимный режим включён.\n\nВсё, что вы напишете дальше, будет передано в техподдержку без указания вашего имени.\n\nЧтобы вернуться к словарю — нажмите «📖 Словарь».",
-        )
+        send_message(chat_id, "🤫 Анонимный режим включён.\n\nВсё, что вы напишете дальше, будет передано в техподдержку без указания вашего имени.\n\nЧтобы вернуться к словарю — нажмите «📖 Словарь».")
         return
 
-    # Если сотрудник до этого нажал кнопку "сообщить о пропавшем слове" —
-    # его следующее обычное сообщение (не команда) пересылаем как текст сообщения.
     pending = load_json(PENDING_FEEDBACK_PATH)
     key = str(chat_id)
     if key in pending:
@@ -225,21 +217,21 @@ def handle_text(chat_id: int, raw_text: str, from_user_label: str) -> None:
         if not term.startswith("/"):
             forward_feedback(chat_id, from_user_label, missing_term or None, term)
             return
-        # Если вместо сообщения пришла команда — просто продолжаем обычную обработку.
 
     if term.startswith("/ask"):
-    question = term[len("/ask"):].strip()
-    if not question:
-        send_message(chat_id, "Напишите вопрос после команды:\n/ask как оформить возврат?")
+        question = term[len("/ask"):].strip()
+        if not question:
+            send_message(chat_id, "Напишите вопрос после команды:\n/ask как оформить возврат?")
+            return
+        send_message(chat_id, "⏳ Думаю...")
+        try:
+            answer = ask_claude(question)
+            send_message(chat_id, f"🤖 {answer}")
+        except Exception:
+            logging.exception("Ошибка Claude API")
+            send_message(chat_id, "Не удалось получить ответ. Попробуйте позже.")
         return
-    send_message(chat_id, "⏳ Думаю...")
-    try:
-        answer = ask_claude(question)
-        send_message(chat_id, f"🤖 {answer}")
-    except Exception:
-        logging.exception("Ошибка Claude API")
-        send_message(chat_id, "Не удалось получить ответ. Попробуйте позже.")
-    return
+
     if term.startswith("/start"):
         set_anon_mode(chat_id, False)
         send_message(
@@ -249,7 +241,9 @@ def handle_text(chat_id: int, raw_text: str, from_user_label: str) -> None:
             "/add термин = определение\n\n"
             "Чтобы написать в техподдержку:\n"
             "/feedback ваш текст\n\n"
-            "Кнопка «🤫 Анонимный чат» ниже — чтобы написать анонимно, без указания имени.\n\n"
+            "Задать вопрос по регламентам:\n"
+            "/ask ваш вопрос\n\n"
+            "Кнопка «🤫 Анонимный чат» ниже — чтобы написать анонимно.\n\n"
             "Примеры:\n"
             "ртз\n"
             "цкп",
@@ -269,16 +263,11 @@ def handle_text(chat_id: int, raw_text: str, from_user_label: str) -> None:
         return
 
     if len(term) > 100:
-        send_message(
-            chat_id,
-            "Запрос слишком длинный. Отправьте короткий термин до 100 символов.",
-        )
+        send_message(chat_id, "Запрос слишком длинный. Отправьте короткий термин до 100 символов.")
         return
 
     if len(term.split()) > 8:
-        send_message(
-            chat_id, "Отправьте слово или короткий термин — не более восьми слов."
-        )
+        send_message(chat_id, "Отправьте слово или короткий термин — не более восьми слов.")
         return
 
     if not re.fullmatch(r"[а-яА-ЯёЁa-zA-Z0-9\s\-]+", term):
@@ -308,19 +297,13 @@ def handle_callback(callback_query: dict) -> None:
         text = message.get("text", "")
         match = re.search(r"«([^»]+)»", text)
         term = match.group(1) if match else None
-
         chat = message.get("chat", {}) or {}
         chat_id = chat.get("id")
-
         if chat_id is not None:
             pending = load_json(PENDING_FEEDBACK_PATH)
             pending[str(chat_id)] = term or ""
             save_json(PENDING_FEEDBACK_PATH, pending)
-            send_message(
-                chat_id,
-                "✏️ Напишите одним сообщением, что хотите передать — я перешлю в техподдержку.",
-            )
-
+            send_message(chat_id, "✏️ Напишите одним сообщением, что хотите передать — я перешлю в техподдержку.")
         answer_callback_query(callback_id, "Жду ваше сообщение")
         return
 
@@ -330,7 +313,6 @@ def handle_callback(callback_query: dict) -> None:
 @app.route("/webhook", methods=["POST"])
 def webhook():
     update = request.get_json(silent=True) or {}
-
     try:
         message = update.get("message") or update.get("edited_message")
         if message and "text" in message:
@@ -339,16 +321,15 @@ def webhook():
             username = from_user.get("username")
             label = f"@{username}" if username else from_user.get("first_name", "сотрудник")
             handle_text(chat_id, message["text"], label)
-
         callback_query = update.get("callback_query")
         if callback_query:
             handle_callback(callback_query)
     except Exception:
         logging.exception("Необработанная ошибка при обработке обновления")
-
     return "OK", 200
 
 
 @app.route("/")
 def index():
     return "100FoodOfBot работает.", 200
+
