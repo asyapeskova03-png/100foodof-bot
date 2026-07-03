@@ -227,6 +227,19 @@ def handle_text(chat_id: int, raw_text: str, from_user_label: str) -> None:
             return
         # Если вместо сообщения пришла команда — просто продолжаем обычную обработку.
 
+    if term.startswith("/ask"):
+    question = term[len("/ask"):].strip()
+    if not question:
+        send_message(chat_id, "Напишите вопрос после команды:\n/ask как оформить возврат?")
+        return
+    send_message(chat_id, "⏳ Думаю...")
+    try:
+        answer = ask_claude(question)
+        send_message(chat_id, f"🤖 {answer}")
+    except Exception:
+        logging.exception("Ошибка Claude API")
+        send_message(chat_id, "Не удалось получить ответ. Попробуйте позже.")
+    return
     if term.startswith("/start"):
         set_anon_mode(chat_id, False)
         send_message(
