@@ -76,9 +76,8 @@ def get_definition(term: str) -> Optional[str]:
     return None
 
 
-def ask_gemini(question: str) -> str:
-    api_key = os.getenv("GEMINI_API_KEY")
-    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key={api_key}"
+def ask_groq(question: str) -> str:
+    api_key = os.getenv("GROQ_API_KEY")
     prompt = (
         f"Ты помощник по регламентам компании 100FOODOF. "
         f"Отвечай только на основе регламентов ниже. "
@@ -87,13 +86,21 @@ def ask_gemini(question: str) -> str:
         f"ВОПРОС: {question}"
     )
     response = requests.post(
-        url,
-        json={"contents": [{"parts": [{"text": prompt}]}]},
+        "https://api.groq.com/openai/v1/chat/completions",
+        headers={
+            "Authorization": f"Bearer {api_key}",
+            "Content-Type": "application/json",
+        },
+        json={
+            "model": "llama-3.1-8b-instant",
+            "messages": [{"role": "user", "content": prompt}],
+            "max_tokens": 1024,
+        },
         timeout=30,
     )
     response.raise_for_status()
     data = response.json()
-    return data["candidates"][0]["content"]["parts"][0]["text"]
+    return data["choices"][0]["message"]["content"]
 
 
 def send_message(chat_id: int, text: str, reply_markup="default") -> None:
@@ -223,10 +230,10 @@ def handle_text(chat_id: int, raw_text: str, from_user_label: str) -> None:
             return
         send_message(chat_id, "⏳ Думаю...")
         try:
-            answer = ask_gemini(question)
+            answer = ask_groq(question)
             send_message(chat_id, f"🤖 {answer}")
         except Exception:
-            logging.exception("Ошибка Gemini API")
+            logging.exception("Ошибка Groq API")
             send_message(chat_id, "Не удалось получить ответ. Попробуйте позже.")
         return
 
